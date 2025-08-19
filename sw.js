@@ -1,5 +1,5 @@
-// GitHub Pages/Netlify でのキャッシュ更新を確実にするため CACHE_NAME を適宜上げてください
-const CACHE_NAME = 'points-cache-v4';
+// 以前の v4 → v5 に変更（強制更新用）
+const CACHE_NAME = 'points-cache-v5';
 const URLS = ['./', './index.html', './manifest.webmanifest'];
 
 self.addEventListener('install', (e) => {
