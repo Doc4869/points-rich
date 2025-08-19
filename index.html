@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <title>日々のポイントトラッカー</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <meta name="theme-color" content="#4f46e5" />
+  <style>
+    :root { --card:#fff; --bg:#f5f7fb; --text:#1f2937; --muted:#6b7280; --brand:#4f46e5; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--text); }
+    .wrap { max-width: 1080px; margin: 0 auto; padding: 16px; }
+    h1 { margin: 8px 0 16px; text-align: center; }
+    .grid { display: grid; gap: 12px; }
+    @media(min-width:900px){ .grid-3 { grid-template-columns: 1fr 1fr 1fr; } .grid-2{ grid-template-columns: 1fr 1fr; } }
+    .card { background:var(--card); border-radius: 12px; box-shadow: 0 3px 10px rgba(0,0,0,.06); padding: 16px; }
+    .muted { color:var(--muted); font-size: 12px; }
+    .btn { padding: 8px 12px; border:1px solid #d1d5db; border-radius: 10px; cursor: pointer; background:#fff; }
+    .btn.brand { background: var(--brand); color:#fff; border-color:var(--brand); }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .field { padding:6px 10px; border:1px solid #d1d5db; border-radius:8px; }
+    table { width:100%; border-collapse: collapse; font-size:14px; }
+    th,td { padding:6px 8px; border-top:1px solid #eee; text-align:left; }
+    .bar { height:10px; background:#e5e7eb; border-radius:999px; overflow:hidden; }
+    .bar>i { display:block; height:100%; background:var(--brand); }
+    .badge { display:inline-block; padding:4px 8px; border-radius:999px; background:#fef3c7; color:#92400e; font-size:12px; }
+  </style>
+
+  <!-- React / ReactDOM / Babel / Recharts (CDN) -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+  <script src="https://unpkg.com/recharts/umd/Recharts.min.js"></script>
+</head>
+<body>
+  <div class="wrap">
+    <h1>日々のポイントトラッカー</h1>
+    <p class="muted" style="text-align:center">ローカル保存／PWA対応。仕事日・休み日、1日1ご褒美、グラフ＆週間・月間レポート。</p>
+    <div id="root"></div>
+  </div>
+
+  <script>
+    // PWA: Service Worker登録
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));
+    }
+  </script>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo } = React;
+    const { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } = Recharts;
+
+    const STORAGE_KEY = "points_tracker_v2";
+
+    // ご褒美テーブル
+    const REWARDS = [
+      { name: "Youtube 30分", cost: 10 },
+      { name: "映画1本", cost: 20 },
+      { name: "普通の外食", cost: 20 },
+      { name: "新しい本を買う", cost: 20 },
+      { name: "マッサージ・スパ", cost: 40 },
+      { name: "高級外食", cost: 50 },
+      { name: "ミュージカル・コンサート", cost: 50 },
+      { name: "服や小物を買う", cost: 60 },
+      { name: "日帰り旅行", cost: 80 },
+      { name: "1泊旅行", cost: 100 }
+    ];
+
+    const todayKey = () => {
+      const d = new Date();
+      const tz = d.getTimezoneOffset()*60000;
+      return new Date(d.getTime() - tz).toISOString().slice(0,10);
+    };
+
+    function App(){
+      const [store, setStore] = useState({
+        entries: {},         // { 'YYYY-MM-DD': { isWorkday, tasks:[], studyMin:0, stretch:false, gym:false, cookL:false, cookD:false, customChecks:[] } }
+        rewards: [],         // [{date, name, cost}]
+        custom: [],          // [{id,name,pts}]
+        settings: { weeklyGoal: 25, monthlyGoal: 100 }
+      });
+      const [date, setDate]   = useState(todayKey());
+      const [isWork, setIsWork] = useState(true);
+
+      // 起動時ロード
+      useEffect(()=>{ try{ const raw=localStorage.getItem(STORAGE_KEY); if(raw) setStore(JSON.parse(raw)); }catch{} },[]);
+      // 自動保存
+      useEffect(()=>{ localStorage.setItem(STORAGE_KEY, JSON.stringify(store)); },[store]);
+
+      // 当日エントリー
+      const entry = store.entries[date] || (isWork
+        ? { isWorkday:true, tasks:{morning:false, stretch:false, english:false, study:false, reading:false}, customChecks:[] }
+        : { isWorkday:false, studyMin:0, stretch:false, gym:false, cookL:false, cookD:false, customChecks:[] }
+      );
+
+      // 1日1つご褒美？
+      const redeemedToday = store.rewards.some(r => r.date === date);
+
+      // 点数計算
+      function calcPoints(e){
+        if(!e) return 0;
+        let pt = 0;
+        if (e.isWorkday) {
+          const t = e.tasks||{};
+          pt += (t.morning?1:0) + (t.stretch?1:0) + (t.english?1:0) + (t.study?1:0) + (t.reading?1:0);
+        } else {
+          const studyPts = Math.floor((e.studyMin||0)/30)*0.5; // 30分=0.5点（切り捨て）
+          pt += studyPts + (e.stretch?1:0) + (e.gym?2:0) + (e.cookL?1:0) + (e.cookD?1:0);
+        }
+        if (e.customChecks?.length) {
+          pt += e.customChecks.reduce((s,id)=> {
+            const it = store.custom.find(c=>c.id===id);
+            return s + (it?.pts||0);
+          },0);
+        }
+        return Math.round(pt*2)/2;
+      }
+
+      // 合計/残ポイント
+      const earnedTotal = useMemo(()=> Object.values(store.entries).reduce((s,e)=>s+calcPoints(e),0),[store.entries]);
+      const spentTotal  = useMemo(()=> store.rewards.reduce((s,r)=>s+r.cost,0),[store.rewards]);
+      const available   = Math.max(0, Math.round((earnedTotal - spentTotal)*2)/2);
+
+      // 曜日/レポート
+      const now = new Date(date);
+      const startOfWeek = new Date(now);
+      startOfWeek.setDate(now.getDate() - ((now.getDay()+6)%7)); // 月曜始まり
+      let weekTotal = 0;
+      for (let i=0;i<7;i++){
+        const d = new Date(startOfWeek.getTime()+i*86400000);
+        const key = new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);
+        weekTotal += calcPoints(store.entries[key]);
+      }
+      const monthPrefix = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+      let monthTotal=0;
+      Object.entries(store.entries).forEach(([k,e])=>{ if(k.startsWith(monthPrefix)) monthTotal+=calcPoints(e); });
+      const weekRate  = Math.round((weekTotal/Math.max(1, store.settings.weeklyGoal))*100);
+      const monthRate = Math.round((monthTotal/Math.max(1, store.settings.monthlyGoal))*100);
+      const monthAchieved = monthTotal >= store.settings.monthlyGoal;
+
+      // 直近30日グラフデータ
+      const chartData = useMemo(()=>{
+        const arr=[];
+        const base = new Date(date);
+        for(let i=29;i>=0;i--){
+          const d = new Date(base.getTime()-i*86400000);
+          const key = new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);
+          arr.push({ d: key.slice(5), p: calcPoints(store.entries[key]) });
+        }
+        // 累積線用
+        let cum=0; return arr.map(o=>{ cum+=o.p; return {...o, cum: Math.round(cum*2)/2}; });
+      },[store.entries,date]);
+
+      function saveEntry(next){
+        setStore(prev => ({ ...prev, entries: { ...prev.entries, [date]: next } }));
+      }
+
+      // ご褒美
+      function redeem(cost, name){
+        if (redeemedToday) return alert("この日は既にご褒美を使用しています（1日1つまで）");
+        if (available < cost) return alert("ポイントが不足しています");
+        setStore(prev => ({ ...prev, rewards:[...prev.rewards, { date, name, cost }] }));
+      }
+
+      // UI部品
+      const Card = (props) => <div className="card">{props.children}</div>;
+
+      // カスタム項目
+      const [cName,setCName] = useState("");
+      const [cPts,setCPts]   = useState(1);
+      function addCustom(){
+        if(!cName.trim()) return;
+        const id = `${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
+        setStore(p => ({ ...p, custom:[...p.custom, {id, name:cName.trim(), pts:parseFloat(cPts)||0}] }));
+        setCName(""); setCPts(1);
+      }
+      function toggleCustom(id,on){
+        const set = new Set(entry.customChecks||[]);
+        on ? set.add(id) : set.delete(id);
+        saveEntry({ ...entry, customChecks:[...set], isWorkday: entry.isWorkday });
+      }
+      function delCustom(id){ setStore(p => ({ ...p, custom: p.custom.filter(c=>c.id!==id) })); }
+
+      // 今日のポイント
+      const todayPoints = calcPoints(entry);
+      const level = Math.floor(available/100);
+
+      return (
+        <div className="grid" style={{gap:16}}>
+          {/* 概要 */}
+          <div className="grid grid-3">
+            <Card>
+              <h3>累積ポイント</h3>
+              <div style={{fontSize:28, fontWeight:700}}>{available} <span className="muted">pt</span></div>
+              <div className="bar" style={{marginTop:8}}><i style={{width:`${available%100}%`}}></i></div>
+              <div className="muted" style={{marginTop:6}}>次の100点まで：{(100-(available%100||100)).toFixed(0)} pt ／ レベル {level}</div>
+            </Card>
+            <Card>
+              <h3>本日（{date}）</h3>
+              <div style={{fontSize:28, fontWeight:700}}>{todayPoints} <span className="muted">pt</span></div>
+              <div className="row" style={{marginTop:8}}>
+                <input className="field" type="date" value={date} onChange={e=>setDate(e.target.value)} />
+                <button className={"btn "+(entry.isWorkday?"brand":"")} onClick={()=>{ setIsWork(true); saveEntry({ ...(store.entries[date]||{}), isWorkday:true, tasks: entry.tasks||{} }); }}>仕事日</button>
+                <button className={"btn "+(!entry.isWorkday?"brand":"")} onClick={()=>{ setIsWork(false); saveEntry({ ...(store.entries[date]||{}), isWorkday:false, studyMin: entry.studyMin||0 }); }}>休み日</button>
+              </div>
+            </Card>
+            <Card>
+              <h3>設定</h3>
+              <div className="row">
+                <label className="muted">週間目標</label>
+                <input className="field" type="number" min="0" value={store.settings.weeklyGoal}
+                  onChange={e=>setStore(p=>({...p, settings:{...p.settings, weeklyGoal:parseInt(e.target.value||"0",10)}}))} />
+                <label className="muted">月間目標</label>
+                <input className="field" type="number" min="0" value={store.settings.monthlyGoal}
+                  onChange={e=>setStore(p=>({...p, settings:{...p.settings, monthlyGoal:parseInt(e.target.value||"0",10)}}))} />
+              </div>
+              {monthAchieved && <div style={{marginTop:8}}><span className="badge">🎖️ 月間目標達成！ {monthTotal} / {store.settings.monthlyGoal} pt</span></div>}
+            </Card>
+          </div>
+
+          {/* 入力 */}
+          <div className="grid grid-2">
+            {entry.isWorkday ? (
+              <Card>
+                <h3>仕事日のチェック項目（各1点）</h3>
+                <div className="row" style={{marginTop:8}}>
+                  {[
+                    ["朝の勉強","morning"],
+                    ["夜のストレッチ","stretch"],
+                    ["英語","english"],
+                    ["勉強","study"],
+                    ["読書","reading"],
+                  ].map(([label,key])=>(
+                    <label key={key} className="row" style={{minWidth:160}}>
+                      <input type="checkbox"
+                        checked={!!entry?.tasks?.[key]}
+                        onChange={e=>saveEntry({ ...entry, isWorkday:true, tasks:{ ...(entry.tasks||{}), [key]: e.target.checked } })}
+                      />
+                      <span>{label}</span>
+                    </label>
+                  ))}
+                </div>
+              </Card>
+            ) : (
+              <Card>
+                <h3>休み日の入力</h3>
+                <div className="row" style={{marginTop:8}}>
+                  <label>勉強（分）
+                    <input className="field" style={{marginLeft:6, width:100}} type="number" min="0" step="30"
+                      value={entry.studyMin||0}
+                      onChange={e=>saveEntry({ ...entry, isWorkday:false, studyMin: Math.max(0, parseInt(e.target.value||"0",10)) })}
+                    />
+                  </label>
+                  <label className="row"><input type="checkbox" checked={!!entry.stretch} onChange={e=>saveEntry({ ...entry, isWorkday:false, stretch:e.target.checked })}/>ストレッチ（1）</label>
+                  <label className="row"><input type="checkbox" checked={!!entry.gym} onChange={e=>saveEntry({ ...entry, isWorkday:false, gym:e.target.checked })}/>ジム筋トレ（2）</label>
+                  <label className="row"><input type="checkbox" checked={!!entry.cookL} onChange={e=>saveEntry({ ...entry, isWorkday:false, cookL:e.target.checked })}/>昼食を作る（1）</label>
+                  <label className="row"><input type="checkbox" checked={!!entry.cookD} onChange={e=>saveEntry({ ...entry, isWorkday:false, cookD:e.target.checked })}/>夕食を作る（1）</label>
+                </div>
+                <p className="muted">※ 勉強は30分ごとに0.5点（切り捨て）。</p>
+              </Card>
+            )}
+
+            <Card>
+              <h3>ご褒美（1日1つまで）</h3>
+              <div className="row" style={{marginTop:8}}>
+                <span className="muted">残り {available} pt</span>
+                {redeemedToday && <span className="badge">本日使用済み</span>}
+              </div>
+              <div style="margin-top:8px"></div>
+              <div className="grid" style={{gridTemplateColumns:'1fr 1fr', gap:8}}>
+                {REWARDS.map(r=>(
+                  <div key={r.name} className="row" style={{justifyContent:'space-between'}}>
+                    <div>
+                      <div style={{fontWeight:600}}>{r.name}</div>
+                      <div className="muted">必要 {r.cost} pt</div>
+                    </div>
+                    <button className="btn brand" disabled={redeemedToday || available<r.cost} onClick={()=>redeem(r.cost, r.name)}>交換</button>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          </div>
+
+          {/* カスタム項目 */}
+          <div className="grid grid-2">
+            <Card>
+              <h3>カスタム項目の管理</h3>
+              <div className="row" style={{marginTop:8}}>
+                <input className="field" placeholder="項目名" value={cName} onChange={e=>setCName(e.target.value)} />
+                <input className="field" type="number" step="0.5" min="0" value={cPts} onChange={e=>setCPts(e.target.value)} style={{width:100}} />
+                <button className="btn brand" onClick={addCustom}>追加</button>
+              </div>
+              <table style="margin-top:8px">
+                <thead><tr><th>項目</th><th>点</th><th></th></tr></thead>
+                <tbody>
+                  {store.custom.map(c=>(
+                    <tr key={c.id}>
+                      <td>{c.name}</td><td>{c.pts}</td>
+                      <td><button className="btn" onClick={()=>delCustom(c.id)}>削除</button></td>
+                    </tr>
+                  ))}
+                  {store.custom.length===0 && <tr><td colSpan="3" className="muted">まだありません。上のフォームから追加してください。</td></tr>}
+                </tbody>
+              </table>
+            </Card>
+
+            <Card>
+              <h3>今日のカスタムチェック</h3>
+              <div className="grid" style={{gridTemplateColumns:'1fr 1fr', gap:8, marginTop:8}}>
+                {store.custom.map(c=>{
+                  const checked = (entry.customChecks||[]).includes(c.id);
+                  return (
+                    <label key={c.id} className="row">
+                      <input type="checkbox" checked={checked} onChange={e=>toggleCustom(c.id, e.target.checked)} />
+                      <span>{c.name} <span className="muted">(+{c.pts})</span></span>
+                    </label>
+                  );
+                })}
+                {store.custom.length===0 && <span className="muted">カスタム項目がありません。</span>}
+              </div>
+            </Card>
+          </div>
+
+          {/* グラフ：日別ポイント（直近30日）＆ 累積 */}
+          <div className="grid grid-2">
+            <Card>
+              <h3>日別ポイント（直近30日）</h3>
+              <div style="height:260px">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={chartData} margin={{ top:8, right:16, left:0, bottom:0 }}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="d" />
+                    <YAxis allowDecimals={false}/>
+                    <Tooltip />
+                    <Bar dataKey="p" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </Card>
+            <Card>
+              <h3>累積推移（直近30日）</h3>
+              <div style="height:260px">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={chartData} margin={{ top:8, right:16, left:0, bottom:0 }}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="d" />
+                    <YAxis allowDecimals={false}/>
+                    <Tooltip />
+                    <Line type="monotone" dataKey="cum" />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </Card>
+          </div>
+
+          {/* レポート / 履歴・ユーティリティ */}
+          <div className="grid grid-2">
+            <Card>
+              <h3>週間・月間レポート</h3>
+              <p>週間合計：<b>{weekTotal}</b> pt ／ 達成率：<b>{weekRate}</b>%（目標 {store.settings.weeklyGoal}）</p>
+              <p>月間合計：<b>{monthTotal}</b> pt ／ 達成率：<b>{monthRate}</b>%（目標 {store.settings.monthlyGoal}）</p>
+            </Card>
+
+            <Card>
+              <h3>最近の履歴（14日）</h3>
+              <table>
+                <thead><tr><th>日付</th><th>種別</th><th>得点</th><th>ご褒美</th></tr></thead>
+                <tbody>
+                  {Object.entries(store.entries).sort((a,b)=>a[0]>b[0]?-1:1).slice(0,14).map(([d,e])=>{
+                    const pt = calcPoints(e);
+                    const rw = store.rewards.find(r=>r.date===d);
+                    return (
+                      <tr key={d}><td>{d}</td><td>{e.isWorkday?"仕事":"休み"}</td><td>{pt}</td><td>{rw?`${rw.name} (-${rw.cost})`:"-"}</td></tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <div className="row" style="margin-top:8px">
+                <button className="btn" onClick={()=>{
+                  const blob = new Blob([JSON.stringify(store,null,2)], {type:"application/json"});
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a"); a.href=url; a.download="points_backup.json"; a.click();
+                }}>バックアップ（JSON）</button>
+
+                <label className="btn" style="cursor:pointer">復元（JSON）
+                  <input type="file" accept="application/json" style="display:none"
+                    onChange={(e)=>{ const f=e.target.files?.[0]; if(!f) return;
+                      const r=new FileReader(); r.onload=()=>{ try{ setStore(JSON.parse(r.result)); alert("復元しました"); }catch{ alert("読み込みに失敗しました"); } };
+                      r.readAsText(f);
+                    }}
+                  />
+                </label>
+              </div>
+            </Card>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
