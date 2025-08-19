@@ -1,121 +1,195 @@
 <!DOCTYPE html>
 <html lang="ja">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>日々のポイントトラッカー</title>
-    <link rel="manifest" href="manifest.webmanifest" />
-    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-    <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <style>
-      body {
-        font-family: Arial, sans-serif;
-        margin: 20px;
-        background: #f0f2f5;
-      }
-      h1 {
-        text-align: center;
-      }
-      .container {
-        max-width: 600px;
-        margin: 0 auto;
-        background: white;
-        padding: 20px;
-        border-radius: 12px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-      }
-      .buttons {
-        display: flex;
-        gap: 10px;
-        justify-content: center;
-        margin: 15px 0;
-      }
-      button {
-        padding: 8px 14px;
-        border: none;
-        border-radius: 8px;
-        cursor: pointer;
-        background: #007bff;
-        color: white;
-      }
-      button:hover {
-        background: #0056b3;
-      }
-      canvas {
-        margin-top: 20px;
-      }
-    </style>
-  </head>
-  <body>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>日々のポイントトラッカー（シンプル）</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <!-- React / ReactDOM / Babel -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    :root { --bg:#eef1f5; --card:#fff; --text:#111827; --muted:#6b7280; --brand:#2563eb; }
+    body{ margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--text); }
+    .wrap{ max-width:900px; margin:0 auto; padding:24px; }
+    h1{ text-align:center; margin:8px 0 6px; }
+    p.lead{ text-align:center; color:var(--muted); margin:0 0 16px; }
+    .card{ background:var(--card); border-radius:16px; box-shadow:0 8px 24px rgba(0,0,0,.08); padding:16px; }
+    .row{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    .btn{ padding:8px 14px; border:none; border-radius:10px; background:var(--brand); color:#fff; cursor:pointer; }
+    .btn.outline{ background:#fff; color:var(--brand); border:1px solid var(--brand); }
+    .btn.gray{ background:#f3f4f6; color:#111; border:1px solid #e5e7eb; }
+    .stats{ display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:12px 0; }
+    .stat{ background:#f8fafc; border:1px solid #e5e7eb; border-radius:12px; padding:12px; }
+    .stat .val{ font-size:28px; font-weight:700; }
+    .muted{ color:var(--muted); font-size:12px; }
+    canvas{ background:#fff; border-radius:12px; }
+    .space{ height:12px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
     <h1>日々のポイントトラッカー</h1>
-    <p style="text-align:center;color:#666;">
-      ローカル保存／PWA対応。仕事日・休み日、1日1ご褒美、グラフ＆週間・月間レポート。
-    </p>
-    <div id="app" class="container"></div>
+    <p class="lead">ローカル保存／PWA対応。まずはシンプルな日次集計と折れ線グラフ。</p>
 
-    <!-- React アプリ本体 -->
-    <script type="text/babel" data-presets="react">
-      const { useState, useEffect } = React;
+    <div id="app" class="card"></div>
+  </div>
 
-      function App() {
-        const [points, setPoints] = useState(() => {
-          const saved = localStorage.getItem("points");
-          return saved ? JSON.parse(saved) : [];
-        });
+  <!-- PWA: SW登録 -->
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js"));
+    }
+  </script>
 
-        const today = new Date().toISOString().split("T")[0];
+  <!-- App -->
+  <script type="text/babel" data-presets="react">
+    const { useEffect, useMemo, useRef, useState } = React;
 
-        const addPoint = (value) => {
-          const newData = [...points, { date: today, value }];
-          setPoints(newData);
-          localStorage.setItem("points", JSON.stringify(newData));
-        };
+    const LS_KEY = "simple_points_v1";
 
-        useEffect(() => {
-          if (points.length > 0) {
-            const ctx = document.getElementById("myChart").getContext("2d");
-            new Chart(ctx, {
-              type: "line",
-              data: {
-                labels: points.map((p) => p.date),
-                datasets: [
-                  {
-                    label: "ポイント",
-                    data: points.map((p) => p.value),
-                    borderColor: "blue",
-                    fill: false,
-                  },
-                ],
-              },
-            });
+    // Util
+    const todayKey = () => new Date(Date.now() - new Date().getTimezoneOffset()*60000)
+                            .toISOString().slice(0,10);
+
+    function useLocalPoints(){
+      const [entries, setEntries] = useState(()=>{
+        try { return JSON.parse(localStorage.getItem(LS_KEY)) || []; }
+        catch { return []; }
+      });
+      useEffect(()=>{ localStorage.setItem(LS_KEY, JSON.stringify(entries)); },[entries]);
+      return [entries, setEntries];
+    }
+
+    function aggregateByDate(entries){
+      const map = new Map();
+      for(const e of entries){
+        const k = e.date;
+        map.set(k, (map.get(k)||0) + Number(e.value||0));
+      }
+      // 日付昇順
+      return Array.from(map.entries())
+        .sort((a,b)=>a[0]<b[0]?-1:1)
+        .map(([date,sum])=>({date, sum}));
+    }
+
+    function App(){
+      const [entries, setEntries] = useLocalPoints();
+      const [date, setDate] = useState(todayKey());
+      const chartRef = useRef(null);
+      const chartObj = useRef(null);
+
+      // 日別集計
+      const daily = useMemo(()=>aggregateByDate(entries), [entries]);
+
+      // 今日の合計と累計
+      const todayTotal = useMemo(() => {
+        return entries.filter(e=>e.date===date).reduce((s,e)=>s+e.value,0);
+      }, [entries, date]);
+      const allTotal = useMemo(()=> entries.reduce((s,e)=>s+e.value,0), [entries]);
+
+      // Chart.js 描画
+      useEffect(()=>{
+        const ctx = chartRef.current.getContext("2d");
+        const labels = daily.map(d=>d.date);
+        const data = daily.map(d=>d.sum);
+        if(chartObj.current){ chartObj.current.destroy(); }
+        chartObj.current = new Chart(ctx, {
+          type: "line",
+          data: { labels, datasets: [{ label: "日合計ポイント", data, borderWidth: 2, tension: .2 }] },
+          options: {
+            responsive: true,
+            scales: { y: { beginAtZero: true } },
+            plugins: { legend: { display: true } }
           }
-        }, [points]);
+        });
+      }, [daily]);
 
-        return (
-          <div>
-            <div className="buttons">
-              <button onClick={() => addPoint(1)}>+1</button>
-              <button onClick={() => addPoint(2)}>+2</button>
-              <button onClick={() => addPoint(3)}>+3</button>
-            </div>
-            <canvas id="myChart" width="400" height="200"></canvas>
+      // 追加・取り消し・全消去
+      const add = (v)=> setEntries(prev => [...prev, {date, value: v}]);
+      const undo = ()=> setEntries(prev => prev.slice(0, -1));
+      const clearAll = ()=>{
+        if(confirm("すべてのデータを削除しますか？")) setEntries([]);
+      };
+
+      // バックアップ＆復元
+      const backup = ()=>{
+        const blob = new Blob([JSON.stringify(entries,null,2)], {type:"application/json"});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a"); a.href=url; a.download="points_backup.json"; a.click();
+      };
+      const restore = (file)=>{
+        const r = new FileReader();
+        r.onload = ()=> {
+          try{
+            const arr = JSON.parse(r.result);
+            if(Array.isArray(arr) && arr.every(x=>x.date && typeof x.value==="number")){
+              setEntries(arr);
+              alert("復元しました");
+            } else {
+              alert("形式が不正です");
+            }
+          }catch{ alert("読み込みに失敗しました"); }
+        };
+        r.readAsText(file);
+      };
+
+      return (
+        <div>
+          {/* 操作列 */}
+          <div className="row" style={{justifyContent:"center"}}>
+            <button className="btn" onClick={()=>add(1)}>+1</button>
+            <button className="btn" onClick={()=>add(2)}>+2</button>
+            <button className="btn" onClick={()=>add(3)}>+3</button>
+            <button className="btn gray" onClick={()=>add(-1)}>-1</button>
+            <input type="date" value={date} onChange={(e)=>setDate(e.target.value)} className="btn outline" style={{padding:"7px 10px"}} />
+            <button className="btn outline" onClick={undo} disabled={entries.length===0}>取り消し</button>
+            <button className="btn gray" onClick={clearAll}>全消去</button>
           </div>
-        );
-      }
 
-      ReactDOM.createRoot(document.getElementById("app")).render(<App />);
-    </script>
+          {/* ステータス */}
+          <div className="stats">
+            <div className="stat">
+              <div className="muted">今日の合計（{date}）</div>
+              <div className="val">{todayTotal}</div>
+            </div>
+            <div className="stat">
+              <div className="muted">累計ポイント</div>
+              <div className="val">{allTotal}</div>
+            </div>
+          </div>
 
-    <!-- PWA Service Worker 登録 -->
-    <script>
-      if ("serviceWorker" in navigator) {
-        navigator.serviceWorker
-          .register("sw.js")
-          .then(() => console.log("Service Worker registered"))
-          .catch((err) => console.error("SW registration failed:", err));
-      }
-    </script>
-  </body>
+          {/* グラフ */}
+          <div style={{padding:"12px 8px"}}>
+            <canvas id="chart" ref={chartRef} height="320"></canvas>
+          </div>
+
+          {/* 履歴（最新10件） */}
+          <div className="space"></div>
+          <div className="row" style={{justifyContent:"space-between"}}>
+            <div className="muted">最新10件の記録</div>
+            <div className="row">
+              <button className="btn gray" onClick={backup}>バックアップ</button>
+              <label className="btn gray" style={{cursor:"pointer"}}>
+                復元
+                <input type="file" accept="application/json" style={{display:"none"}} onChange={(e)=> e.target.files[0] && restore(e.target.files[0]) }/>
+              </label>
+            </div>
+          </div>
+          <ul style={{listStyle:"none", padding:"6px 0 0 0", margin:0}}>
+            {[...entries].slice(-10).reverse().map((e,i)=>(
+              <li key={i} className="muted">• {e.date} … {e.value>0?`+${e.value}`:e.value}</li>
+            ))}
+            {entries.length===0 && <li className="muted">記録はまだありません。</li>}
+          </ul>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("app")).render(<App />);
+  </script>
+</body>
 </html>
