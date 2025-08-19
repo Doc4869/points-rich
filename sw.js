@@ -1,32 +1,70 @@
-// 以前の v4 → v5 に変更（強制更新用）
-const CACHE_NAME = 'points-cache-v5';
-const URLS = ['./', './index.html', './manifest.webmanifest'];
+// sw.js（簡易版）
+// 更新を確実に反映したい時はバージョン番号を上げてください（v1 → v2 …）
+const CACHE_NAME = 'points-simple-v1';
 
-self.addEventListener('install', (e) => {
+// まずは同一フォルダのローカル資産だけを確実にプリキャッシュ
+// ※ CDN（React/Babel/Chart.js）は初回アクセス時に動的キャッシュします
+const PRECACHE_URLS = [
+  './',
+  './index.html',
+  './manifest.webmanifest'
+];
+
+self.addEventListener('install', (event) => {
+  // 新しいSWを即時有効化
   self.skipWaiting();
-  e.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll(URLS)));
+  event.waitUntil(
+    caches.open(CACHE_NAME).then(async (cache) => {
+      // index.html を "cache: 'reload'" で取得して古いネットワークレスポンスを避ける
+      await cache.addAll(
+        PRECACHE_URLS.map((u) => new Request(u, { cache: 'reload' }))
+      );
+    })
+  );
 });
 
-self.addEventListener('activate', (e) => {
-  e.waitUntil((async () => {
-    const keys = await caches.keys();
-    await Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)));
-    await self.clients.claim();
-  })());
+self.addEventListener('activate', (event) => {
+  // 旧キャッシュを掃除して、コントロールを即時取得
+  event.waitUntil(
+    (async () => {
+      const keys = await caches.keys();
+      await Promise.all(
+        keys
+          .filter((k) => k !== CACHE_NAME)
+          .map((k) => caches.delete(k))
+      );
+      await self.clients.claim();
+    })()
+  );
 });
 
-self.addEventListener('fetch', (e) => {
-  e.respondWith((async () => {
-    try {
-      const res = await fetch(e.request);
-      const cache = await caches.open(CACHE_NAME);
-      cache.put(e.request, res.clone());
-      return res;
-    } catch (err) {
-      const cached = await caches.match(e.request);
-      if (cached) return cached;
-      if (e.request.mode === 'navigate') return caches.match('./index.html');
-      throw err;
-    }
-  })());
+// 基本方針：ネットワーク優先（成功したらキャッシュ更新）→ 失敗時はキャッシュfallback
+self.addEventListener('fetch', (event) => {
+  const req = event.request;
+
+  event.respondWith(
+    (async () => {
+      try {
+        // 通常の取得を試みる
+        const netRes = await fetch(req);
+        // 同じオリジンのリクエストやCDNなど、取れたものは極力キャッシュへ保存
+        const cache = await caches.open(CACHE_NAME);
+        cache.put(req, netRes.clone());
+        return netRes;
+      } catch (err) {
+        // オフライン等で失敗したらキャッシュを探す
+        const cached = await caches.match(req);
+        if (cached) return cached;
+
+        // 画面遷移（HTMLナビゲーション）の場合は index.html を返す
+        if (req.mode === 'navigate') {
+          const fallback = await caches.match('./index.html');
+          if (fallback) return fallback;
+        }
+
+        // それでも無理ならエラーを投げる（ブラウザの標準エラーページ）
+        throw err;
+      }
+    })()
+  );
 });
